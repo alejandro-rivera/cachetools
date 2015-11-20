@@ -1,69 +1,92 @@
-import collections
+from .abc import DefaultMapping
 
 
-class _DefaultSize(object):
-    def __getitem__(self, _):
+class _CacheDict(dict):
+
+    def __init__(self, getsizeof):
+        dict.__init__(self)
+        self.getsizeof = getsizeof
+        self.size = 0
+
+    def __delitem__(self, key):
+        self.size -= dict.pop(self, key)[1]
+
+    def getvalue(self, key):
+        return self[key][0]
+
+    def getsize(self, key):
+        try:
+            return self[key][1]
+        except KeyError:
+            return 0
+
+    def set(self, key, value, size):
+        delta = size - self.getsize(key)
+        self[key] = (value, size)
+        self.size += delta
+
+
+class _SimpleDict(dict):
+
+    @property
+    def size(self):
+        return len(self)
+
+    def getvalue(self, key):
+        return self[key]
+
+    def getsize(self, key):
+        return 1 if key in self else 0
+
+    def set(self, key, value, _):
+        self[key] = value
+
+    @staticmethod
+    def getsizeof(value):
         return 1
 
-    def __setitem__(self, _, value):
-        assert value == 1
 
-    def pop(self, _):
-        return 1
-
-
-class Cache(collections.MutableMapping):
+class Cache(DefaultMapping):
     """Mutable mapping to serve as a simple cache or cache base class."""
-
-    __size = _DefaultSize()
 
     def __init__(self, maxsize, missing=None, getsizeof=None):
         if missing:
             self.__missing = missing
         if getsizeof:
-            self.__getsizeof = getsizeof
-            self.__size = dict()
-        self.__data = dict()
-        self.__currsize = 0
+            self.__data = _CacheDict(getsizeof)
+        else:
+            self.__data = _SimpleDict()
         self.__maxsize = maxsize
 
     def __repr__(self):
         return '%s(%r, maxsize=%d, currsize=%d)' % (
             self.__class__.__name__,
             list(self.items()),
-            self.__maxsize,
-            self.__currsize,
+            self.maxsize,
+            self.currsize,
         )
+
+    def __contains__(self, key):
+        return key in self.__data
 
     def __getitem__(self, key):
         try:
-            return self.__data[key]
+            return self.__data.getvalue(key)
         except KeyError:
             return self.__missing__(key)
 
     def __setitem__(self, key, value):
-        maxsize = self.__maxsize
-        size = self.getsizeof(value)
-        if size > maxsize:
-            raise ValueError('value too large')
-        if key not in self.__data or self.__size[key] < size:
-            while self.__currsize + size > maxsize:
+        size = self.__data.getsizeof(value)
+        if self.__data.getsize(key) < size:
+            maxsize = self.maxsize
+            if size > maxsize:
+                raise ValueError('value too large')
+            while self.__data.size + size > maxsize:
                 self.popitem()
-        if key in self.__data:
-            diffsize = size - self.__size[key]
-        else:
-            diffsize = size
-        self.__data[key] = value
-        self.__size[key] = size
-        self.__currsize += diffsize
+        self.__data.set(key, value, size)
 
     def __delitem__(self, key):
-        size = self.__size.pop(key)
         del self.__data[key]
-        self.__currsize -= size
-
-    def __contains__(self, key):
-        return key in self.__data
 
     def __missing__(self, key):
         value = self.__missing(key)
@@ -77,10 +100,6 @@ class Cache(collections.MutableMapping):
         return len(self.__data)
 
     @staticmethod
-    def __getsizeof(value):
-        return 1
-
-    @staticmethod
     def __missing(key):
         raise KeyError(key)
 
@@ -92,33 +111,8 @@ class Cache(collections.MutableMapping):
     @property
     def currsize(self):
         """The current size of the cache."""
-        return self.__currsize
+        return self.__data.size
 
     def getsizeof(self, value):
         """Return the size of a cache element's value."""
-        return self.__getsizeof(value)
-
-    # collections.MutableMapping mixin methods do not handle __missing__
-
-    def get(self, key, default=None):
-        if key in self:
-            return self[key]
-        else:
-            return default
-
-    __marker = object()
-
-    def pop(self, key, default=__marker):
-        if key in self:
-            value = self[key]
-            del self[key]
-            return value
-        elif default is self.__marker:
-            raise KeyError(key)
-        else:
-            return default
-
-    def setdefault(self, key, default=None):
-        if key not in self:
-            self[key] = default
-        return self[key]
+        return self.__data.getsizeof(value)
